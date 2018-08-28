@@ -374,8 +374,11 @@ int receive_data(int sockfd){
         }
         else if(type == READ){
             int fd = read_int_from_buffer(&recvbuffer);
+            printf("received read fd %d\n\n", fd);
             int size = read_int_from_buffer(&recvbuffer);
+            printf("received read size %d\n\n", size);
             int offset = read_int_from_buffer(&recvbuffer);
+            printf("received read offset %d\n\n", offset);
             serve_read(sockfd, fd, size, offset);
         }
         else if(type == MKDIR){
