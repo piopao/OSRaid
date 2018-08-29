@@ -98,7 +98,7 @@ int RECVLEN = 2000;
 int SENDLEN = 1000;
 struct mount* curmount;
 
-int CHUNKSIZE = 10;
+int CHUNKSIZE = 1;
 
 int ERRORCODE = -1000;
 int NOFILE = -2000;
@@ -693,7 +693,6 @@ int readdr_read_single(const char *path, char *buf, size_t size, off_t offset, s
     struct element* fdelem =  get_fd_element(fi->fh);
     int first_server_fd = get_server_fd(fdelem, server);
 
-    printf("first_server_fd %d server port %d \n\n", first_server_fd, server->port);
     if(first_server_fd < 0) return ERRORCODE;
     // int first_server_fd = fdelem->server_fds[0]->fd;
     
@@ -701,7 +700,6 @@ int readdr_read_single(const char *path, char *buf, size_t size, off_t offset, s
     int send_size = generate_default_prefix(READ, path, buffer); 
     send_size += write_int_in_buffer(first_server_fd, buffer+send_size);
 
-    printf("read single size %d\n", size);
     send_size += write_int_in_buffer(size, buffer+send_size);
     send_size += write_int_in_buffer(offset, buffer+send_size);
     int sent = send_data(sockfd, buffer, send_size);
@@ -718,14 +716,12 @@ int readdr_read_single(const char *path, char *buf, size_t size, off_t offset, s
 
 
     int res = read_int_from_buffer(&recvbuffer);
-    printf("read first int from buffer in single read%d\n", res);
 
     if(res < 0 ){
         free(initialbuffer);
         return res;
     }
     int len = read_int_from_buffer(&recvbuffer);
-    printf("read recv text length in single read%d\n", len);
 
     read_string_from_buffer(&recvbuffer, len, buf);
 
@@ -737,11 +733,10 @@ int readdr_read_single(const char *path, char *buf, size_t size, off_t offset, s
 
 int readdr_read_single_wrapper(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi, int sockfd,  struct server* server){
     printf("read single wrapper\n");
+    printf("server port %d\n", server->port);
     int readbytes = 0;
     while(readbytes < size){
         int bytes_to_read = size - readbytes < SENDLEN ? size - readbytes : SENDLEN;
-        printf("bytes to read %d\n", bytes_to_read);
-        printf("offset%d\n", offset);
         int res = readdr_read_single(path, buf + readbytes, bytes_to_read, offset, fi, sockfd, server);
         if(res == ERRORCODE) return ERRORCODE;
         if(res <= 0) return res;
@@ -847,7 +842,6 @@ static int readdr_read_raid5_tmp(const char *path, char *buf, size_t size, off_t
     printf("\n\n read raid 5\n\n");
     printf("read size %d\n\n", size);
     int nblocks =  (int)ceil((float)size/CHUNKSIZE);
-    printf("nblocks %d\n", nblocks);
     char* tmpbuffer = malloc(CHUNKSIZE+1);
     tmpbuffer[CHUNKSIZE] = '\0';
     int server_count = curmount->server_cont->size;
@@ -856,26 +850,21 @@ static int readdr_read_raid5_tmp(const char *path, char *buf, size_t size, off_t
     for(int i=0; i<nblocks; i++){
         int servNum = i % server_count;
         int offsetNum = (int)ceil((float)i/(server_count-1));
-        printf("i %d servernum %d offsetNum %d\n", i, servNum, offsetNum);
 
         int sockfd = get_socket(curmount->server_cont->servers[servNum]);
         int res = readdr_read_single_wrapper(path, tmpbuffer, CHUNKSIZE, offsetNum*CHUNKSIZE, fi, sockfd, curmount->server_cont->servers[servNum]);
-        printf("read %s nbytes %d \n", tmpbuffer, res);
 
         if(res == ERRORCODE){
-            printf("\n errorcode read bytes %d\n", readbytes);
             free(tmpbuffer);
             return readbytes;
         }  //tmp;
         if(res <= 0){
-            printf("\n res < 0 readbytes bytes %d\n", readbytes);
             free(tmpbuffer);
 
             return readbytes;
         } 
         memcpy(buf+i*CHUNKSIZE, tmpbuffer, CHUNKSIZE);
         buf[size]='\0';
-        printf("read %s in buffer buffer looks like this \n", buf);
 
         readbytes += CHUNKSIZE;
 
@@ -887,13 +876,24 @@ static int readdr_read_raid5_tmp(const char *path, char *buf, size_t size, off_t
 }
 
 char* xor_buffers(char* buf1, char* buf2, int size){
-    char* parity = malloc(size);
+    char* parity = malloc(size+1);
+    parity[size]='\0';
     for(int i=0; i<size; i++){
         char ch = (char)0;
+        printf("buf1 buf2 %c %c \n", buf1[i], buf2[i]);
         ch = buf1[i]^buf2[i];
         parity[i] = ch;
     }
+    printf("I PARITIED IT %s\n", parity);
     return parity;
+}
+
+void xor_into_buffer(char* buf1, char* buf2, int size){
+    for(int i=0; i<size; i++){
+        char ch = (char)0;
+        ch = buf1[i]^buf2[i];
+        buf1[i] = ch;
+    }
 }
 
 
@@ -905,24 +905,45 @@ static int readdr_read_raid5(const char *path, char *buf, size_t size, off_t off
     int curoffset = offset % CHUNKSIZE;
     int read_size = 0;
 
+    int server_failed = -1;
+
+
     while(read_size < size){
         int servNum = nblock % server_count;
-        printf("\n\nservnum, WHICHSERVER %d\n\n", servNum);
         int stripe = (int)nblock/(server_count-1);
         int write_size = MIN(CHUNKSIZE - curoffset, size - read_size);
-        printf("CHUNKSIZE%d CUROFFSET%d SIZE%d READSIZE%d\n ", CHUNKSIZE, curoffset, size, read_size);
         int sockfd = get_socket(curmount->server_cont->servers[servNum]);
 
         // int parityServerNum = server_count-1 - stripe%(server_count);
         // int parity_sockfd = get_socket(curmount->server_cont->servers[parityServerNum]);
 
         char* tmpbuf_readblock = malloc(write_size);
-        memset(tmpbuf_readblock, 0, write_size);
+        memset(tmpbuf_readblock, 0, write_size);        
 
         int res = readdr_read_single_wrapper(path, tmpbuf_readblock, write_size, stripe*CHUNKSIZE+curoffset, fi, sockfd, curmount->server_cont->servers[servNum]);
 
-        printf("raid5 read res, writesize %d %d\n", res, write_size);
-        if(res < 0){ 
+        if(res == ERRORCODE){
+            if(server_failed != -1 && server_failed != servNum){
+                free(tmpbuf_readblock);
+                return -1;
+            }else{
+                char* recovered = malloc(write_size);
+                memset(recovered, 0, write_size);
+                char* read_data = malloc(write_size);
+                for(int i=0; i<server_count; i++){
+                    if(i == servNum) continue;
+                    int cursockfd = get_socket(curmount->server_cont->servers[i]);
+                    int curres = readdr_read_single_wrapper(path, read_data, write_size, stripe*CHUNKSIZE+curoffset, fi, cursockfd, curmount->server_cont->servers[i]);
+                    if(curres < 0) return 0;
+                    xor_into_buffer(recovered, read_data, curres);
+                }
+                res = write_size;
+                memcpy(tmpbuf_readblock, recovered, write_size);
+                free(recovered);
+                free(read_data);
+            }
+        }
+        else if(res < 0){ 
             free(tmpbuf_readblock);
             return res;
         } 
@@ -931,9 +952,7 @@ static int readdr_read_raid5(const char *path, char *buf, size_t size, off_t off
         read_size += res;
 
         if(res < write_size){          
-            printf("read this to buf %s\n", buf);
             free(tmpbuf_readblock);
-            printf("morcha yvelaferi %d\n", read_size); 
             return read_size; 
         } 
         
@@ -949,14 +968,21 @@ static int readdr_read_raid5(const char *path, char *buf, size_t size, off_t off
 
 
 static int readdr_write_raid5(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi){
-    printf("raid5 write \n");
+    printf("\n\nraid5 write \n");
+    printf("write_size %d\n", size);
     int server_count = curmount->server_cont->size;
     int nblock = (int)offset / CHUNKSIZE;
 
     int curoffset = offset % CHUNKSIZE;
     int written_size = 0;
 
+    struct fuse_file_info* tmpfi = malloc(sizeof(struct fuse_file_info));
+    tmpfi->flags = O_RDONLY;
+    readdr_open(path, tmpfi);
+
+
     while(written_size < size){
+        printf("\n\nITERATIONNNN\n\n");
         int servNum = nblock % server_count;
         int stripe = (int)nblock/(server_count-1);
         int write_size = MIN(CHUNKSIZE - curoffset, size - written_size);
@@ -965,22 +991,33 @@ static int readdr_write_raid5(const char *path, const char *buf, size_t size, of
         int parityServerNum = server_count-1 - stripe%(server_count);
         int parity_sockfd = get_socket(curmount->server_cont->servers[parityServerNum]);
 
-        char* tmpbuf_readblock = malloc(write_size);
-        char* tmpbuf_parityblock = malloc(write_size);
+        char* tmpbuf_readblock = malloc(write_size+1);
+        char* tmpbuf_parityblock = malloc(write_size+1);
         memset(tmpbuf_readblock, 0, write_size);
         memset(tmpbuf_parityblock, 0, write_size);
 
-        int res = readdr_read_raid5(path, tmpbuf_readblock, write_size, offset+written_size, fi);
+        int res = readdr_read_raid5(path, tmpbuf_readblock, write_size, offset+written_size, tmpfi);
+        printf("read old block %d\n", res);
 
-        res = readdr_read_single_wrapper(path, tmpbuf_parityblock, write_size, stripe*CHUNKSIZE+curoffset, fi, sockfd, curmount->server_cont->servers[parityServerNum]);
+        res = readdr_read_single_wrapper(path, tmpbuf_parityblock, write_size, stripe*CHUNKSIZE+curoffset, tmpfi, parity_sockfd, curmount->server_cont->servers[parityServerNum]);
+
+        printf("read parity block %d\n", res);
+
         char* old_xor = xor_buffers(tmpbuf_readblock, tmpbuf_parityblock, write_size);
         char* new_xor = xor_buffers(old_xor, buf+written_size, write_size);
 
         res = readdr_write_single_wrapper(path, new_xor, write_size, stripe*CHUNKSIZE+curoffset, fi, parity_sockfd);
+        printf("write in new %d\n", res);
         res = readdr_write_single_wrapper(path, buf+written_size, write_size, stripe*CHUNKSIZE+curoffset, fi, sockfd);
+        printf("write in parity %d\n", res);
+
+        int w = readdr_read_single_wrapper(path, tmpbuf_parityblock, write_size, stripe*CHUNKSIZE+curoffset, fi, parity_sockfd, curmount->server_cont->servers[parityServerNum]);
+        printf("read parity i just wrote in %d\n", w);
+
 
         written_size += res;
-        
+
+
         nblock++;
         curoffset = 0;
 
@@ -990,6 +1027,9 @@ static int readdr_write_raid5(const char *path, const char *buf, size_t size, of
         free(tmpbuf_parityblock);
 
     }
+
+    readdr_release(path, tmpfi);
+
     printf("raid5 end of write \n");
     return written_size;
     

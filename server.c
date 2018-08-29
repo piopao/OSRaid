@@ -280,9 +280,12 @@ int serve_read(int sockfd, int fd, int size, int offset){
     int tosend_size = 0;
     char buffer[size];
     int res = pread(fd, buffer, size, offset);
+    printf("read result ON FD %d %d\n\n", res, fd);
 
-    if (res < 0)
-        tosend_size += write_int_in_buffer(res, tosend_buffer+tosend_size);
+    if (res < 0){
+        tosend_size += write_int_in_buffer(-errno, tosend_buffer+tosend_size);
+        printf("read errno %d\n\n", errno);
+    }
     else{
         tosend_size += write_int_in_buffer(0, tosend_buffer+tosend_size);
         tosend_size += write_int_in_buffer(res, tosend_buffer+tosend_size);
@@ -290,7 +293,7 @@ int serve_read(int sockfd, int fd, int size, int offset){
         strcpy(tosend_buffer + tosend_size, buffer);
         tosend_size += res;
     }
-    tosend_buffer[tosend_size] = '\0';
+    // tosend_buffer[tosend_size] = '\0';
     printf("\n\nread tosend buffer %s\n\n\n", tosend_buffer);
     send_data(sockfd, tosend_buffer, tosend_size);  
     return 0;
@@ -328,6 +331,7 @@ int serve_write(int sockfd, char* buf, int size, int offset, int fd){
     printf("write serve\n");
     int res = pwrite(fd, buf, size, offset);
     if (res == -1) res = -errno;
+    printf("\n\n WRITE SERVE ERRNO ON FD %d %d\n", res, fd);
     char tosend_buffer[sizeof(uint32_t)];
     int tosend_size = 0;
     tosend_size += write_int_in_buffer(res, tosend_buffer+tosend_size);
