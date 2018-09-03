@@ -36,7 +36,7 @@
 
 
 
-enum command{GETATTR, OPEN, READ, READDIR, MKDIR, RMDIR, CREATE, UNLINK, RELEASE, WRITE, TRUNCATE};
+enum command{GETATTR, OPEN, READ, READDIR, MKDIR, RMDIR, CREATE, UNLINK, RELEASE, WRITE, TRUNCATE, RENAME};
 char serverpath[1024];
 
 /*write -1 read 0 fail*/
@@ -341,6 +341,19 @@ int serve_write(int sockfd, char* buf, int size, int offset, int fd){
 }
 
 
+int serve_rename(int sockfd, char* oldpath, char* newpath){
+    printf("rename serve\n");
+    int res = rename(oldpath, newpath);
+    if (res == -1) res = -errno;
+    char tosend_buffer[sizeof(uint32_t)];
+    int tosend_size = 0;
+    tosend_size += write_int_in_buffer(res, tosend_buffer+tosend_size);
+    send_data(sockfd, tosend_buffer, tosend_size); 
+    printf("endof rename\n");
+    return 0;
+}
+
+
 
 
 int receive_data(int sockfd){
@@ -353,11 +366,11 @@ int receive_data(int sockfd){
 
         int type = read_int_from_buffer(&recvbuffer);
         // if(type < 0) continue;
-        printf("type %d\n", type);
+        // printf("type %d\n", type);
         // if(type < 0) continue;
 
         int len = read_int_from_buffer(&recvbuffer);
-        printf("len %d\n", len);
+        // printf("len %d\n", len);
         char path[1024];
         read_string_from_buffer(&recvbuffer, len, path);
         path[len] = '\0';
@@ -365,7 +378,8 @@ int receive_data(int sockfd){
         char finalpath[1024];
         memcpy(finalpath, serverpath, strlen(serverpath)+1);
         strcat(finalpath, path);
-        printf("path %s\n", finalpath);
+        // printf("path %s\n", finalpath);
+
         if(type == GETATTR){
             serve_getattr(sockfd, finalpath);
         }
@@ -378,11 +392,11 @@ int receive_data(int sockfd){
         }
         else if(type == READ){
             int fd = read_int_from_buffer(&recvbuffer);
-            printf("received read fd %d\n\n", fd);
+            // printf("received read fd %d\n\n", fd);
             int size = read_int_from_buffer(&recvbuffer);
-            printf("received read size %d\n\n", size);
+            // printf("received read size %d\n\n", size);
             int offset = read_int_from_buffer(&recvbuffer);
-            printf("received read offset %d\n\n", offset);
+            // printf("received read offset %d\n\n", offset);
             serve_read(sockfd, fd, size, offset);
         }
         else if(type == MKDIR){
@@ -421,6 +435,23 @@ int receive_data(int sockfd){
             tosend_size += write_int_in_buffer(res, tosend_buffer+tosend_size);
             send_data(sockfd, tosend_buffer, tosend_size); 
         } 
+        else if(type == RENAME){
+            int lennew = read_int_from_buffer(&recvbuffer);
+            // printf("len %d\n", lennew);
+            char pathnew[1024];
+            read_string_from_buffer(&recvbuffer, lennew, pathnew);
+            pathnew[lennew] = '\0';
+            char finalpathnew[1024];
+
+            memcpy(finalpathnew, serverpath, strlen(serverpath)+1);
+            strcat(finalpathnew, pathnew);
+
+            // printf("path new%s\n", finalpathnew);
+
+
+            serve_rename(sockfd, finalpath, finalpathnew);
+
+        } 
         free(initialbuffer);
     }
     
@@ -428,81 +459,6 @@ int receive_data(int sockfd){
 }
 
 
-// int receive_data(int sockfd){
-//     while(1){
-//         printf("go \n");
-
-//         int type = read_int_from_socket(sockfd);
-//         // if(type < 0) continue;
-//         printf("type %d\n", type);
-//         // if(type < 0) continue;
-
-//         int len = read_int_from_socket(sockfd);
-//         printf("len %d\n", len);
-//         char path[1024];
-//         read_string_from_socket(sockfd, len, path);
-//         path[len] = '\0';
-
-//         char finalpath[1024];
-//         memcpy(finalpath, serverpath, strlen(serverpath)+1);
-//         strcat(finalpath, path);
-//         printf("path %s\n", finalpath);
-//         if(type == GETATTR){
-//             serve_getattr(sockfd, finalpath);
-//         }
-//         else if(type == READDIR){
-//             serve_readdir(sockfd, finalpath);
-//         }
-//         else if(type == OPEN){
-//             int flags = read_int_from_socket(sockfd);
-//             serve_open(sockfd, finalpath, flags, 0);
-//         }
-//         else if(type == READ){
-//             int fd = read_int_from_socket(sockfd);
-//             int size = read_int_from_socket(sockfd);
-//             int offset = read_int_from_socket(sockfd);
-//             serve_read(sockfd, fd, size, offset);
-//         }
-//         else if(type == MKDIR){
-//             int mode = read_int_from_socket(sockfd);
-//             serve_mkdir(sockfd, finalpath, mode);
-//         }
-//         else if(type == RMDIR){
-//             serve_rmdir(sockfd, finalpath);
-//         }
-//         else if(type == CREATE){
-//             int flags = read_int_from_socket(sockfd);
-//             int mode = read_int_from_socket(sockfd);
-//             serve_open(sockfd, finalpath, flags, mode);
-//         }
-//         else if(type == UNLINK){
-//             serve_unlink(sockfd, finalpath);
-//         }
-//         else if(type == RELEASE){
-//             int fd = read_int_from_socket(sockfd);
-//             serve_release(sockfd, fd);
-//         } 
-//         else if(type == WRITE){
-//             int fd = read_int_from_socket(sockfd);
-//             int offset = read_int_from_socket(sockfd);
-//             int size = read_int_from_socket(sockfd);
-//             char buf[size];
-//             read_string_from_socket(sockfd, size, buf);
-//             serve_write(sockfd, buf, size, offset, fd);
-//         } 
-//         else if(type == TRUNCATE){
-//             int size = read_int_from_socket(sockfd);
-//             int res = truncate(finalpath, size);
-//             char tosend_buffer[sizeof(uint32_t)];
-//             if(res < 0) res = -errno;
-//             int tosend_size = 0;
-//             tosend_size += write_int_in_buffer(res, tosend_buffer+tosend_size);
-//             send_data(sockfd, tosend_buffer, tosend_size); 
-//         } 
-//     }
-    
-//     return 0;
-// }
 
 
 int start_socket(int listenfd){
@@ -520,13 +476,6 @@ int start_socket(int listenfd){
 }
 
 
-// DIR *dir;
-// struct dirent *dp;
-// char * file_name;
-// while ((dp=readdir(dir)) != NULL) {
-
-//         file_name = dp->d_name;            
-// }
 
 
 int main(int argc, char *argv[])
