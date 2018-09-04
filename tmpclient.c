@@ -95,7 +95,7 @@ struct element{
 struct element *head = NULL;
 int global_fd_counter = 3;
 int RECVLEN = 2000;
-int SENDLEN = 1000;
+int SENDLEN = 500;
 struct mount* curmount;
 
 int CHUNKSIZE = 128;
@@ -204,6 +204,7 @@ int readdr_getattr_single(const char* path, struct stat *stbuf, int sockfd){
         return ERRORCODE;
     } 
 
+    printf("received %d\n", recieved);
     int err = read_int_from_buffer(&recvbuffer);
 
     if (err < 0){
@@ -222,7 +223,7 @@ int readdr_getattr_single(const char* path, struct stat *stbuf, int sockfd){
         stbuf->st_mtime = time(NULL);
         stbuf->st_ctime = time(NULL);
     }
-
+    printf("getattr size %d\n", stbuf->st_size);
     free(initialbuffer);
     return 0;
 }
@@ -270,9 +271,11 @@ static int readdr_getattr_raid5(const char* path, struct stat *stbuf){
     int not_responded = -1;
     int max_col_size = 0;
 
+    struct stat* tmpst = malloc(sizeof(struct stat));
+
     for (int i=0; i < curmount->server_cont->size; i++){
         int sockfd = get_socket(curmount->server_cont->servers[i]);
-        int res = readdr_getattr_single(path, stbuf, sockfd);
+        int res = readdr_getattr_single(path, tmpst, sockfd);
 
         if(res == ERRORCODE){
             if(not_responded >= 0){
@@ -282,13 +285,25 @@ static int readdr_getattr_raid5(const char* path, struct stat *stbuf){
             continue;
         }
         else if(res < 0){
+            printf("GOT THIS RES %d from i %d\n", res, i);
             return res;
         } 
         else{
-            sum_size += stbuf->st_size;
-            int realsize = get_real_size(stbuf->st_size, i, curmount->server_cont->size);
+            sum_size += tmpst->st_size;
+            int realsize = get_real_size(tmpst->st_size, i, curmount->server_cont->size);
             final_size += realsize;
-            max_col_size = MAX(stbuf->st_size, max_col_size);
+            max_col_size = MAX(tmpst->st_size, max_col_size);
+
+            stbuf->st_mode = tmpst->st_mode;
+            stbuf->st_nlink = tmpst->st_nlink;
+            stbuf->st_uid = tmpst->st_uid;
+            stbuf->st_gid = tmpst->st_gid;
+            stbuf->st_rdev = tmpst->st_rdev;
+            // stbuf->st_size = tmpst->st_mode;
+            stbuf->st_blocks += tmpst->st_blocks;      
+            stbuf->st_atime = tmpst->st_atime;
+            stbuf->st_mtime = tmpst->st_mtime;
+            stbuf->st_ctime = tmpst->st_ctime;
         }
     }
 
@@ -317,6 +332,7 @@ int readdr_readdir_single(const char *path, void *buf, fuse_fill_dir_t filler, o
         free(initialbuffer);
         return ERRORCODE;
     }
+    printf("readdir single received n of bytes %d\n", recieved);
     int count = read_int_from_buffer(&recvbuffer);
 
     int err = read_int_from_buffer(&recvbuffer);
@@ -360,7 +376,7 @@ static int readdr_readdir(const char *path, void *buf, fuse_fill_dir_t filler, o
         int sockfd = get_socket(curmount->server_cont->servers[i]);
         int res = readdr_readdir_single(path, buf, filler, offset, fi, sockfd);
         if(res == ERRORCODE) continue;
-        if(res < 0) return res;
+        // if(res < 0) return res;
         else break;
     }
 
@@ -478,6 +494,7 @@ int readdr_create_single(const char *path, mode_t mode,  struct fuse_file_info *
     char* initialbuffer = recvbuffer;
     int recieved = read(sockfd, recvbuffer, 2000);
     if(recieved <= 0){
+        printf("I COULDNT RECIEVE ANYTHING IN CREATE\n");
         free(initialbuffer);
         return ERRORCODE;
     }
@@ -736,8 +753,6 @@ int readdr_read_single(const char *path, char *buf, size_t size, off_t offset, s
 
 
 int readdr_read_single_wrapper(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi, int sockfd,  struct server* server){
-    printf("read single wrapper\n");
-    printf("server port %d\n", server->port);
     int readbytes = 0;
     while(readbytes < size){
         int bytes_to_read = size - readbytes < SENDLEN ? size - readbytes : SENDLEN;
@@ -748,7 +763,6 @@ int readdr_read_single_wrapper(const char *path, char *buf, size_t size, off_t o
         if(res < bytes_to_read) return readbytes;
         offset += res;
     }
-    printf("finished with read %d\n", readbytes);
     return readbytes;
 }
 
@@ -802,7 +816,7 @@ int readdr_write_single_wrapper(const char *path, const char *buf, size_t size, 
     int sentbytes = 0;
     while(sentbytes < size){
         int bytes_to_send = size - sentbytes < SENDLEN ? size - sentbytes : SENDLEN;
-        int res = readdr_write_single(path, buf + sentbytes, bytes_to_send, offset, fi, sockfd);
+        int res = readdr_write_single(path, buf + sentbytes, bytes_to_send, offset + sentbytes, fi, sockfd);
         if(res == ERRORCODE) return ERRORCODE;
         if(res <= 0) return res;
         sentbytes += res;
@@ -814,14 +828,15 @@ int readdr_write_single_wrapper(const char *path, const char *buf, size_t size, 
 
 static int readdr_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
     int res;
+    int final_size;
     for (int i=0; i< curmount->server_cont->size; i++){
         int sockfd = get_socket(curmount->server_cont->servers[i]);
         res = readdr_write_single_wrapper(path, buf, size, offset, fi, sockfd);
         if(res == ERRORCODE) continue;
         if(res < 0) return res;
-
+        if(res >= 0) final_size = res;
     }
-    return res;    
+    return final_size;  
 }
 
 
@@ -865,6 +880,8 @@ void xor_into_buffer(char* buf1, char* buf2, int size){
 }
 
 
+
+
 static int readdr_read_raid5(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi){
     printf("read raid 5");
     int server_count = curmount->server_cont->size;
@@ -895,9 +912,11 @@ static int readdr_read_raid5(const char *path, char *buf, size_t size, off_t off
                 free(tmpbuf_readblock);
                 return -1;
             }else{
+                //todo: +1ebi movashoro
                 char* recovered = malloc(write_size);
                 memset(recovered, 0, write_size);
                 char* read_data = malloc(write_size);
+                memset(read_data, 0, write_size);
                 for(int i=0; i<server_count; i++){
                     if(i == servNum) continue;
                     int cursockfd = get_socket(curmount->server_cont->servers[i]);
@@ -912,11 +931,9 @@ static int readdr_read_raid5(const char *path, char *buf, size_t size, off_t off
             }
         }
         else if(res < 0){ 
-            printf("res < 0 read raid 5 ppc%d\n", res);
             free(tmpbuf_readblock);
             return res;
         } 
-        printf("res after iteration %d\n\n", res);
         memcpy(buf+read_size, tmpbuf_readblock, res);
 
         read_size += res;
@@ -966,23 +983,24 @@ static int readdr_write_raid5(const char *path, const char *buf, size_t size, of
         memset(tmpbuf_readblock, 0, write_size);
         memset(tmpbuf_parityblock, 0, write_size);
 
+
+
         int res = readdr_read_raid5(path, tmpbuf_readblock, write_size, offset+written_size, tmpfi);
         // printf("read old block %d\n", res);
 
         res = readdr_read_single_wrapper(path, tmpbuf_parityblock, write_size, stripe*CHUNKSIZE+curoffset, tmpfi, parity_sockfd, curmount->server_cont->servers[parityServerNum]);
 
-        // printf("read parity block %d\n", res);
+        printf("read parity block %d\n", res);
 
         char* old_xor = xor_buffers(tmpbuf_readblock, tmpbuf_parityblock, write_size);
+
         char* new_xor = xor_buffers(old_xor, buf+written_size, write_size);
 
         res = readdr_write_single_wrapper(path, new_xor, write_size, stripe*CHUNKSIZE+curoffset, fi, parity_sockfd);
         // printf("write in new %d\n", res);
         res = readdr_write_single_wrapper(path, (char*)buf+written_size, write_size, stripe*CHUNKSIZE+curoffset, fi, sockfd);
         // printf("write in parity %d\n", res);
-
-        int w = readdr_read_single_wrapper(path, tmpbuf_parityblock, write_size, stripe*CHUNKSIZE+curoffset, fi, parity_sockfd, curmount->server_cont->servers[parityServerNum]);
-        // printf("read parity i just wrote in %d\n", w);
+        
 
         written_size += write_size;
 

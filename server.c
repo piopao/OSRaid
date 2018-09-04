@@ -279,8 +279,8 @@ int serve_read(int sockfd, int fd, int size, int offset){
 
     int tosend_size = 0;
     char buffer[size];
-    int res = pread(fd, buffer, size, offset);
-    printf("read result ON FD %d %d\n\n", res, fd);
+    memset(buffer, 0, size);
+    int res = pread(fd, buffer, size, offset);   
 
     if (res < 0){
         tosend_size += write_int_in_buffer(-errno, tosend_buffer+tosend_size);
@@ -290,11 +290,11 @@ int serve_read(int sockfd, int fd, int size, int offset){
         tosend_size += write_int_in_buffer(0, tosend_buffer+tosend_size);
         tosend_size += write_int_in_buffer(res, tosend_buffer+tosend_size);
 
-        strcpy(tosend_buffer + tosend_size, buffer);
+        memcpy(tosend_buffer + tosend_size, buffer, size);
         tosend_size += res;
     }
-    // tosend_buffer[tosend_size] = '\0';
-    printf("\n\nread tosend buffer %s\n\n\n", tosend_buffer);
+    
+    // printf("\n\nread tosend buffer %s\n\n\n", tosend_buffer);
     send_data(sockfd, tosend_buffer, tosend_size);  
     return 0;
 
