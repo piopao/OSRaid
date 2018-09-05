@@ -36,7 +36,7 @@
 
 
 
-enum command{GETATTR, OPEN, READ, READDIR, MKDIR, RMDIR, CREATE, UNLINK, RELEASE, WRITE, TRUNCATE, RENAME};
+enum command{GETATTR, OPEN, READ, READDIR, MKDIR, RMDIR, CREATE, UNLINK, RELEASE, WRITE, TRUNCATE, RENAME, OPENDIR, RELEASEDIR};
 char serverpath[1024];
 
 /*write -1 read 0 fail*/
@@ -116,7 +116,6 @@ int get_listener_socket(int port){
 
 
 int serve_getattr(int sockfd, char* path){
-    printf("getattr path %s \n", path);
     struct stat file_stat;
     char tosend_buffer[1000];
     int tosend_size = 0;
@@ -139,7 +138,6 @@ int serve_getattr(int sockfd, char* path){
     }
 
     send_data(sockfd, tosend_buffer, tosend_size);
-    printf("end of getattr");
     return 0;
 }
 
@@ -171,7 +169,6 @@ int serve_mkdir(int sockfd, char* path, int mode){
 
 
 int serve_readdir(int sockfd, char* path){
-    printf("read dir\n");
     fflush(stdout);
     char tosend_buffer[1000];
 
@@ -240,7 +237,6 @@ int serve_open(int sockfd, char* path, int flags, int mode){
     tosend_size += write_int_in_buffer(res, tosend_buffer+tosend_size);
 
     send_data(sockfd, tosend_buffer, tosend_size);    
-    printf("sent data from open\n");
 
     return 0;
 }
@@ -284,7 +280,6 @@ int serve_read(int sockfd, int fd, int size, int offset){
 
     if (res < 0){
         tosend_size += write_int_in_buffer(-errno, tosend_buffer+tosend_size);
-        printf("read errno %d\n\n", errno);
     }
     else{
         tosend_size += write_int_in_buffer(0, tosend_buffer+tosend_size);
@@ -316,49 +311,70 @@ int serve_unlink(int sockfd, char* path){
 
 int serve_release(int sockfd, int fd){
     int res = close(fd);
-    printf("release serve %d \n", res);
     if (res == -1) res  = -errno;
     char tosend_buffer[sizeof(uint32_t)];
     int tosend_size = 0;
     tosend_size += write_int_in_buffer(res, tosend_buffer+tosend_size);
     send_data(sockfd, tosend_buffer, tosend_size); 
-    printf("endof serve\n");  
     return 0;
 }
 
 
 int serve_write(int sockfd, char* buf, int size, int offset, int fd){ 
-    printf("write serve\n");
     int res = pwrite(fd, buf, size, offset);
     if (res == -1) res = -errno;
-    printf("\n\n WRITE SERVE ERRNO ON FD %d %d\n", res, fd);
     char tosend_buffer[sizeof(uint32_t)];
     int tosend_size = 0;
     tosend_size += write_int_in_buffer(res, tosend_buffer+tosend_size);
     send_data(sockfd, tosend_buffer, tosend_size); 
-    printf("endof write\n"); 
     return 0;
 }
 
 
 int serve_rename(int sockfd, char* oldpath, char* newpath){
-    printf("rename serve\n");
     int res = rename(oldpath, newpath);
     if (res == -1) res = -errno;
     char tosend_buffer[sizeof(uint32_t)];
     int tosend_size = 0;
     tosend_size += write_int_in_buffer(res, tosend_buffer+tosend_size);
     send_data(sockfd, tosend_buffer, tosend_size); 
-    printf("endof rename\n");
     return 0;
 }
 
 
 
+int serve_opendir(int sockfd, char* path){
+
+    char tosend_buffer[1000];
+    int tosend_size = 0;
+    
+    DIR* dir = opendir(path);
+    if(dir != NULL){
+        tosend_size += write_int_in_buffer((size_t)dir, tosend_buffer+tosend_size);
+    }else{
+        tosend_size += write_int_in_buffer(-errno, tosend_buffer+tosend_size);
+    }
+
+    send_data(sockfd, tosend_buffer, tosend_size);    
+
+    return 0;
+}
+
+
+int serve_releasedir(int sockfd, size_t dir){
+    int res = closedir((DIR*)dir);
+    if (res == -1) res  = -errno;
+    char tosend_buffer[sizeof(uint32_t)];
+    int tosend_size = 0;
+    tosend_size += write_int_in_buffer(res, tosend_buffer+tosend_size);
+    send_data(sockfd, tosend_buffer, tosend_size);  
+    return 0;
+}
+
+
 
 int receive_data(int sockfd){
     while(1){
-        printf("go \n");
         char* recvbuffer = malloc(2000);
         char* initialbuffer = recvbuffer;
         // int recieved = read(sockfd, recvbuffer, 2000);
@@ -451,7 +467,14 @@ int receive_data(int sockfd){
 
             serve_rename(sockfd, finalpath, finalpathnew);
 
-        } 
+        }
+        else if(type == OPENDIR){
+            serve_opendir(sockfd, finalpath);
+        }
+        else if(type == RELEASEDIR){
+            int fd = read_int_from_buffer(&recvbuffer);
+            serve_releasedir(sockfd, fd);
+        }
         free(initialbuffer);
     }
     

@@ -36,11 +36,13 @@
 
 #include <math.h>
 
+#include <time.h>
+
 
 #define MAX(x, y) (((x) > (y)) ? (x) : (y))
 #define MIN(x, y) (((x) < (y)) ? (x) : (y))
 
-enum Command{GETATTR, OPEN, READ, READDIR, MKDIR, RMDIR, CREATE, UNLINK, RELEASE, WRITE, TRUNCATE, RENAME};
+enum Command{GETATTR, OPEN, READ, READDIR, MKDIR, RMDIR, CREATE, UNLINK, RELEASE, WRITE, TRUNCATE, RENAME, OPENDIR, RELEASEDIR};
 
 struct server{
     char* ip;
@@ -103,6 +105,7 @@ int CHUNKSIZE = 128;
 int ERRORCODE = -1000;
 int NOFILE = -2000;
 
+FILE *errorlog = NULL;
 
 int write_int_in_buffer(int towrite, char* buffer){
     uint32_t towrite_typed = htonl(towrite);
@@ -140,6 +143,20 @@ int read_string_from_buffer(char** buffer, int len, char* string){
     return 0;
 }
 
+/*code from wiki article*/
+int print_to_error_log(char* message, struct server* server){
+    char s[1000];
+
+    time_t t = time(NULL);
+    struct tm * p = localtime(&t);
+
+    strftime(s, 1000, "%A, %b %d %T %Y", p);
+
+    fprintf(errorlog, "[%s] %s %s : %d %s\n", s, curmount->diskname,server->ip, server->port, message);
+    fflush(errorlog);
+    return 0;
+
+}
 
 int get_socket(struct server* s){
     if(s->sockfd != -1) return s->sockfd;
@@ -158,6 +175,7 @@ int get_socket(struct server* s){
     if(connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
         return -1;
     s->sockfd = sockfd;
+    print_to_error_log("opened connection", s);
     return sockfd;
 }
 
@@ -204,7 +222,6 @@ int readdr_getattr_single(const char* path, struct stat *stbuf, int sockfd){
         return ERRORCODE;
     } 
 
-    printf("received %d\n", recieved);
     int err = read_int_from_buffer(&recvbuffer);
 
     if (err < 0){
@@ -223,14 +240,12 @@ int readdr_getattr_single(const char* path, struct stat *stbuf, int sockfd){
         stbuf->st_mtime = time(NULL);
         stbuf->st_ctime = time(NULL);
     }
-    printf("getattr size %d\n", stbuf->st_size);
     free(initialbuffer);
     return 0;
 }
 
 
 static int readdr_getattr(const char* path, struct stat *stbuf){
-    printf("\n\n get attribute \n\n");
     for (int i=0; i < curmount->server_cont->size; i++){
         int sockfd = get_socket(curmount->server_cont->servers[i]);
         int res = readdr_getattr_single(path, stbuf, sockfd);
@@ -238,7 +253,6 @@ static int readdr_getattr(const char* path, struct stat *stbuf){
         if(res < 0) return res;
         else break;
     }
-    printf("\n\n end of get attribute \n\n");
     return 0;
 }
 
@@ -265,7 +279,6 @@ int get_real_size(int size, int i, int ndrives){
 }
 
 static int readdr_getattr_raid5(const char* path, struct stat *stbuf){
-    printf("\n\n get attribute raid5\n\n");
     int final_size = 0;
     int sum_size = 0;
     int not_responded = -1;
@@ -285,7 +298,6 @@ static int readdr_getattr_raid5(const char* path, struct stat *stbuf){
             continue;
         }
         else if(res < 0){
-            printf("GOT THIS RES %d from i %d\n", res, i);
             return res;
         } 
         else{
@@ -311,8 +323,6 @@ static int readdr_getattr_raid5(const char* path, struct stat *stbuf){
         final_size += get_real_size(max_col_size, not_responded, curmount->server_cont->size);
     }
     stbuf->st_size = final_size;
-    printf("final size%d\n", final_size);
-    printf("\n\n end of get attribute raid5\n\n");
     return 0;
 }
 
@@ -332,7 +342,6 @@ int readdr_readdir_single(const char *path, void *buf, fuse_fill_dir_t filler, o
         free(initialbuffer);
         return ERRORCODE;
     }
-    printf("readdir single received n of bytes %d\n", recieved);
     int count = read_int_from_buffer(&recvbuffer);
 
     int err = read_int_from_buffer(&recvbuffer);
@@ -370,8 +379,6 @@ int readdr_readdir_single(const char *path, void *buf, fuse_fill_dir_t filler, o
 }
 
 static int readdr_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi){ 
-    printf("\n\n readdir \n\n");
-
     for (int i=0; i < curmount->server_cont->size; i++){
         int sockfd = get_socket(curmount->server_cont->servers[i]);
         int res = readdr_readdir_single(path, buf, filler, offset, fi, sockfd);
@@ -379,11 +386,7 @@ static int readdr_readdir(const char *path, void *buf, fuse_fill_dir_t filler, o
         // if(res < 0) return res;
         else break;
     }
-
-    printf("\n\n end of readdir \n\n");
-
     return 0;
-    
 }
 
 
@@ -456,17 +459,13 @@ int readdr_open_single(const char *path, struct fuse_file_info *fi, int sockfd, 
 
     fi->fh = add_element_fd(tmp, *globalfd);
     *globalfd = fi->fh;
-    free(initialbuffer);
-
-    printf("open server port %d got fd %d\n\n", server->port, tmp->fd);
-   
+    free(initialbuffer);   
     return 0;
 }
 
 
 
 static int readdr_open(const char *path, struct fuse_file_info *fi){
-    printf("\n\n open \n\n");
     int* fd = malloc(sizeof(int));
     *fd = NOFILE;
     for (int i=0; i < curmount->server_cont->size; i++){
@@ -475,7 +474,6 @@ static int readdr_open(const char *path, struct fuse_file_info *fi){
         if(res == ERRORCODE) continue;
         if(res < 0) return res;
     }
-    printf("\n\n end of open \n\n");
     return 0;
     
 }
@@ -494,7 +492,6 @@ int readdr_create_single(const char *path, mode_t mode,  struct fuse_file_info *
     char* initialbuffer = recvbuffer;
     int recieved = read(sockfd, recvbuffer, 2000);
     if(recieved <= 0){
-        printf("I COULDNT RECIEVE ANYTHING IN CREATE\n");
         free(initialbuffer);
         return ERRORCODE;
     }
@@ -521,7 +518,6 @@ int readdr_create_single(const char *path, mode_t mode,  struct fuse_file_info *
 
 
 static int readdr_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
-    printf("\n\n create \n\n");
     int* fd = malloc(sizeof(int));
     *fd = NOFILE;
     for (int i=0; i < curmount->server_cont->size; i++){
@@ -530,7 +526,6 @@ static int readdr_create(const char *path, mode_t mode, struct fuse_file_info *f
         if(res == ERRORCODE) continue;
         if(res < 0) return res;
     }
-    printf("\n\n end of create \n\n");
     return 0;
 }
 
@@ -577,14 +572,12 @@ int readdr_mkdir_single(const char *path, mode_t mode, int sockfd){
 }
 
 static int readdr_mkdir(const char *path, mode_t mode){
-    printf("\n\n mkdir \n\n");
     for (int i=0; i < curmount->server_cont->size; i++){
         int sockfd = get_socket(curmount->server_cont->servers[i]);
         int res = readdr_mkdir_single(path, mode, sockfd);
         if(res == ERRORCODE) continue;
         if(res < 0) return res;
     }
-    printf("\n\n end of mkdir \n\n");
     return 0;
     
 }
@@ -613,14 +606,12 @@ int readdr_rmdir_single(const char*path, int sockfd){
 
 
 static int readdr_rmdir(const char *path){
-    printf("\n\n rmdir \n\n");
     for (int i=0; i < curmount->server_cont->size; i++){
         int sockfd = get_socket(curmount->server_cont->servers[i]);
         int res = readdr_rmdir_single(path, sockfd);
         if(res == ERRORCODE) continue;
         if(res < 0) return res;
     }
-    printf("\n\n end of rmdir \n\n");
     return 0;    
 }
 
@@ -650,16 +641,12 @@ int readdr_unlink_single(const char *path, int sockfd){
 
 
 static int readdr_unlink(const char *path){
-    printf("\n\n unlink \n\n");
-
     for (int i=0; i < curmount->server_cont->size; i++){
         int sockfd = get_socket(curmount->server_cont->servers[i]);
         int res = readdr_unlink_single(path, sockfd);
         if(res == ERRORCODE) continue;
         if(res < 0) return res;
     }
-    printf("\n\n end of unlink \n\n");
-
     return 0;     
 }
 
@@ -693,8 +680,6 @@ int readdr_release_single(const char *path, struct fuse_file_info *fi, int sockf
 
 
 static int readdr_release(const char *path, struct fuse_file_info *fi){
-    printf("\n\n release \n\n");
-
     struct element* elem = get_fd_element(fi->fh);
     for (int i=0; i < curmount->server_cont->size; i++){
         int sockfd = get_socket(curmount->server_cont->servers[i]);
@@ -703,8 +688,6 @@ static int readdr_release(const char *path, struct fuse_file_info *fi){
         if(res < 0) return res;
     }
     DL_DELETE(head,elem);
-    printf("\n\n end of release \n\n");
-
     return 0;
     
 }
@@ -863,11 +846,9 @@ char* xor_buffers(const char* buf1, const char* buf2, int size){
     parity[size]='\0';
     for(int i=0; i<size; i++){
         char ch = (char)0;
-        // printf("buf1 buf2 %c %c \n", buf1[i], buf2[i]);
         ch = buf1[i]^buf2[i];
         parity[i] = ch;
     }
-    // printf("I PARITIED IT %s\n", parity);
     return parity;
 }
 
@@ -883,7 +864,6 @@ void xor_into_buffer(char* buf1, char* buf2, int size){
 
 
 static int readdr_read_raid5(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi){
-    printf("read raid 5");
     int server_count = curmount->server_cont->size;
     int nblock = (int)offset / CHUNKSIZE;
 
@@ -949,14 +929,12 @@ static int readdr_read_raid5(const char *path, char *buf, size_t size, off_t off
         free(tmpbuf_readblock);
 
     }
-    printf("read size  in raid5%d \n", read_size);
     return read_size;
 }
 
 
 
 static int readdr_write_raid5(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi){
-    printf("\n\nraid5 write size %d\n", size);
     int server_count = curmount->server_cont->size;
     int nblock = (int)offset / CHUNKSIZE;
 
@@ -985,20 +963,18 @@ static int readdr_write_raid5(const char *path, const char *buf, size_t size, of
 
 
 
-        int res = readdr_read_raid5(path, tmpbuf_readblock, write_size, offset+written_size, tmpfi);
+        readdr_read_raid5(path, tmpbuf_readblock, write_size, offset+written_size, tmpfi);
         // printf("read old block %d\n", res);
 
-        res = readdr_read_single_wrapper(path, tmpbuf_parityblock, write_size, stripe*CHUNKSIZE+curoffset, tmpfi, parity_sockfd, curmount->server_cont->servers[parityServerNum]);
-
-        printf("read parity block %d\n", res);
+        readdr_read_single_wrapper(path, tmpbuf_parityblock, write_size, stripe*CHUNKSIZE+curoffset, tmpfi, parity_sockfd, curmount->server_cont->servers[parityServerNum]);
 
         char* old_xor = xor_buffers(tmpbuf_readblock, tmpbuf_parityblock, write_size);
 
         char* new_xor = xor_buffers(old_xor, buf+written_size, write_size);
 
-        res = readdr_write_single_wrapper(path, new_xor, write_size, stripe*CHUNKSIZE+curoffset, fi, parity_sockfd);
+        readdr_write_single_wrapper(path, new_xor, write_size, stripe*CHUNKSIZE+curoffset, fi, parity_sockfd);
         // printf("write in new %d\n", res);
-        res = readdr_write_single_wrapper(path, (char*)buf+written_size, write_size, stripe*CHUNKSIZE+curoffset, fi, sockfd);
+        readdr_write_single_wrapper(path, (char*)buf+written_size, write_size, stripe*CHUNKSIZE+curoffset, fi, sockfd);
         // printf("write in parity %d\n", res);
         
 
@@ -1015,8 +991,6 @@ static int readdr_write_raid5(const char *path, const char *buf, size_t size, of
     }
 
     readdr_release(path, tmpfi);
-
-    printf("raid5 end of write \n");
     return written_size;
     
 }
@@ -1045,14 +1019,12 @@ int readdr_rename_single(const char *oldpath, const char *newpath, int sockfd){
     char* recvbuffer = malloc(2000);
     char* initialbuffer = recvbuffer;
     int recieved = read(sockfd, recvbuffer, 2000);
-    printf("rename received %d\n", recieved);
     if(recieved <= 0){
         free(initialbuffer);
         return ERRORCODE;
     }
 
     int err = read_int_from_buffer(&recvbuffer);
-    printf("rename err%d\n", err);
 
     free(initialbuffer);
 
@@ -1064,15 +1036,12 @@ int readdr_rename_single(const char *oldpath, const char *newpath, int sockfd){
 
 
 static int readdr_rename(const char *oldpath, const char *newpath){
-    printf("\n\n rename \n\n");
     for (int i=0; i < curmount->server_cont->size; i++){
         int sockfd = get_socket(curmount->server_cont->servers[i]);
         int res = readdr_rename_single(oldpath, newpath, sockfd);
         if(res == ERRORCODE) continue;
         if(res < 0) return res;
     }
-    printf("\n\n end of rename \n\n");
-
     return 0; 
 
 }
@@ -1288,8 +1257,6 @@ int readdr_truncate_single(const char*path, off_t size, int sockfd){
     int res = read_int_from_buffer(&recvbuffer);
 
     free(initialbuffer);
-
-    printf("result from truncate %d \n", res);
     fflush(stdout);
     return res;
 
@@ -1310,7 +1277,6 @@ static int readdr_truncate(const char *path, off_t size){
 }
 
 static int readdr_truncate_raid5(const char *path, off_t size){
-    printf("truncate raid5 %d size\n", size);
     int serverNum = curmount->server_cont->size;
     int oneStripeSize = (serverNum-1)*CHUNKSIZE;
     int fullstripes = size / oneStripeSize;
@@ -1336,17 +1302,107 @@ static int readdr_truncate_raid5(const char *path, off_t size){
    
 
     for (int i=0; i< curmount->server_cont->size; i++){
-        printf("SIZE server %d size %d\n", i, truncate_sizes[i]);
         int sockfd = get_socket(curmount->server_cont->servers[i]);
         // int res = readdr_truncate_single(path, size, sockfd);
         int res = readdr_truncate_single(path, truncate_sizes[i], sockfd);
         if(res == ERRORCODE) continue;
         if(res < 0) return res;
     }
-
-    printf("truncate raid5\n");  
     return 0;
 }
+
+
+
+int readdr_releasedir_single(const char *path, struct fuse_file_info *fi, int sockfd, struct element* elem, struct server* server){
+    char buffer[1024];
+    int size = generate_default_prefix(RELEASE, path, buffer);
+    // int first_server_fd = elem->server_fds[0]->fd;
+    int first_server_fd = get_server_fd(elem, server);
+    if(first_server_fd == -1) {
+        return ERRORCODE;
+    }
+    
+    size += write_int_in_buffer(first_server_fd, buffer+size);
+    send_data(sockfd, buffer, size);
+
+    char* recvbuffer = malloc(2000);
+    char* initialbuffer = recvbuffer;
+    int recieved = read(sockfd, recvbuffer, 2000);
+    if(recieved <= 0){
+        free(initialbuffer);
+        return -1;
+    }
+    int res = read_int_from_buffer(&recvbuffer);
+    free(initialbuffer);
+    return res;
+}
+
+
+
+static int readdr_releasedir(const char *path, struct fuse_file_info *fi){
+    struct element* elem = get_fd_element(fi->fh);
+    for (int i=0; i < curmount->server_cont->size; i++){
+        int sockfd = get_socket(curmount->server_cont->servers[i]);
+        int res = readdr_release_single(path, fi, sockfd, elem, curmount->server_cont->servers[i]);
+        if(res == ERRORCODE) continue;
+        if(res < 0) return res;
+    }
+    DL_DELETE(head,elem);
+    return 0;
+    
+}
+
+
+
+int readdr_opendir_single(const char *path, struct fuse_file_info *fi, int sockfd, struct server* server, int* globalfd){
+    char buffer[1024];
+    int size = generate_default_prefix(OPENDIR, path, buffer);  
+    int sent = send_data(sockfd, buffer, size);
+    if(sent == ERRORCODE) return ERRORCODE;
+
+
+    char* recvbuffer = malloc(2000);
+    char* initialbuffer = recvbuffer;
+    int recieved = read(sockfd, recvbuffer, 2000);
+    if(recieved <= 0){
+        free(initialbuffer);
+        return ERRORCODE;
+    }
+
+    int fd = read_int_from_buffer(&recvbuffer);
+
+    fflush(stdout);
+    if(fd < 0){
+        free(initialbuffer);
+        return fd;
+    }
+    // int fd = read_int_from_socket(sockfd);
+
+    struct server_fd* tmp = malloc(sizeof(struct server_fd));
+    tmp->ip = server->ip;
+    tmp->port = server->port;
+    tmp->fd = fd;
+
+    fi->fh = add_element_fd(tmp, *globalfd);
+    *globalfd = fi->fh;
+    free(initialbuffer);   
+    return 0;
+}
+
+
+
+static int readdr_opendir(const char *path, struct fuse_file_info *fi){
+    int* fd = malloc(sizeof(int));
+    *fd = NOFILE;
+    for (int i=0; i < curmount->server_cont->size; i++){
+        int sockfd = get_socket(curmount->server_cont->servers[i]);
+        int res = readdr_open_single(path, fi, sockfd, curmount->server_cont->servers[i], fd);
+        if(res == ERRORCODE) continue;
+        if(res < 0) return res;
+    }
+    return 0;    
+}
+
 
 
 /*mkdir unlink rmdir open write release create */
@@ -1360,8 +1416,8 @@ static struct fuse_operations readdr_oper = {
     .read       = readdr_read,
     .write      = readdr_write,
     .release    = readdr_release,
-    // .opendir    = readdr_opendir,
-    // .releasedir    = readdr_releasedir,
+    .opendir    = readdr_opendir,
+    .releasedir    = readdr_releasedir,
     .create    = readdr_create,
     .readdir   = readdr_readdir,
     .utimens = readdr_utimens,
@@ -1381,8 +1437,8 @@ static struct fuse_operations readdr_oper_raid5 = {
     .read       = readdr_read_raid5,
     .write      = readdr_write_raid5,
     .release    = readdr_release,
-    // .opendir    = readdr_opendir,
-    // .releasedir    = readdr_releasedir,
+    .opendir    = readdr_opendir,
+    .releasedir    = readdr_releasedir,
     .create    = readdr_create,
     .readdir   = readdr_readdir,
     .utimens = readdr_utimens,
@@ -1393,30 +1449,42 @@ static struct fuse_operations readdr_oper_raid5 = {
 
 
 
+
 int main(int argc, char *argv[])
 {
     umask(0);
     parse_config(argv[1]);
-    // int sockfd = get_socket(mt_container->mounts[0]->server_cont->servers[0]);
-    // receive_data(sockfd);
-    // return 0;
-    // printf("%s mountpointiii\n", mt_container->mounts[0]->mountpoint);
-    curmount = mt_container->mounts[0];
-    // curmount->server_cont->size = 1;
-    argv[1] = curmount->mountpoint;
-    if(strcmp(curmount->raid, "5")==0){
-        printf("raid5");
-        return fuse_main(argc, argv, &readdr_oper_raid5, NULL);
+    // curmount = mt_container->mounts[1];
+    // // curmount->server_cont->size = 1;
+    // argv[1] = curmount->mountpoint;
+
+    meta->errorlog[strlen(meta->errorlog)-1]='\0';
+    errorlog = fopen(meta->errorlog, "w");
+    
+    if(!errorlog){
+        printf("error");
     }
+    
+
+    curmount = mt_container->mounts[1];
+    argv[1] = curmount->mountpoint;
+    if(strcmp(curmount->raid, "5")==0)
+        return fuse_main(argc, argv, &readdr_oper_raid5, NULL);
     else return fuse_main(argc, argv, &readdr_oper, NULL);
 
-
-    // for (int i=0; i<1;){
+    // for (int i=0; i<mt_container->size;){
     //     int par = fork();
     //     if(par == 0){
     //         curmount = mt_container->mounts[i];
     //         argv[1] = curmount->mountpoint;
-    //         return fuse_main(argc, argv, &readdr_oper, NULL);
+    //         if(strcmp(curmount->raid, "5")==0){
+    //             fuse_main(argc, argv, &readdr_oper_raid5, NULL);
+    //             exit(0);
+    //         }
+    //         else{
+    //             fuse_main(argc, argv, &readdr_oper, NULL);
+    //             exit(0);
+    //         }
     //     }else{
     //         i += 1;
     //     }
